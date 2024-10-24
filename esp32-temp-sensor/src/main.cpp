@@ -11,6 +11,9 @@
 //#define DHTTYPE    DHT22     // DHT 22 (AM2302)
 //#define DHTTYPE    DHT21     // DHT 21 (AM2301)
 
+#define uS_TO_S_FACTOR 1000000
+#define TIME_TO_SLEEP 15 * 60
+
 DHT_Unified dht(DHTPIN, DHTTYPE);
 // Adafruit_AHTX0 aht;
 
@@ -28,20 +31,19 @@ String apiKey = SRV_API_KEY;
 String hgSensorTempID = HG_SENSOR_TEMP_ID;
 String hgSensorHumID = HG_SENSOR_HUM_ID;
 
-uint32_t loopDelay = 60 * 1000;
-
 // void readAHTSensorData() {
-//   aht.getEvent(&humidity, &temp);// populate temp and humidity objects with fresh data
+//   aht.getEvent(&humidity, &temp);
 //   Serial.print("Temperature: "); 
 //   Serial.print(temp.temperature); 
-//   Serial.println(" degrees C");
+//   Serial.println(F("°C"));
 //   Serial.print("Humidity: "); 
 //   Serial.print(humidity.relative_humidity); 
-//   Serial.println("% rH");
+//   Serial.println(F("%"));
 // }
 
 void readDHTSensorData() {
   dht.temperature().getEvent(&temp);
+
   if (isnan(temp.temperature)) {
     Serial.println(F("Error reading temperature!"));
   }
@@ -115,14 +117,18 @@ void syncData() {
   }
 
   client.stop();
+  WiFi.mode(WIFI_OFF);
 }
 
 void setup() {
   Serial.begin(115200);
-  delay(1000);
+  delay(1000); // wait for serial to open
+
+  esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
 
   dht.begin();
   sensor_t sensor;
+  delay(sensor.min_delay + 1000); // wait for sensor
 
   // if (! aht.begin()) {
   //   Serial.println("Could not find AHT? Check wiring");
@@ -136,5 +142,5 @@ void loop() {
   readDHTSensorData();
   syncData();
 
-  delay(loopDelay);
+  esp_deep_sleep_start();
 }
