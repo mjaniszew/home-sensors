@@ -1,48 +1,46 @@
-#include <secrets.h>
+#include <FS.h>
 #include <Arduino.h>
+#include <WiFiManager.h>
+#include <SPIFFS.h>
+#include <ArduinoJson.h>  
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <Adafruit_AHTX0.h>
-#include <DHT.h>
-#include <DHT_U.h>
+#include <secrets.h>
+// #include <DHT.h>
+// #include <DHT_U.h>
 
-#define DHTPIN 10     // Digital pin connected to the DHT sensor
-#define DHTTYPE    DHT11     // DHT 11
+#define RESETPIN 13
+// #define DHTPIN 23     // Digital pin connected to the DHT sensor
+// #define DHTTYPE    DHT11     // DHT 11
 //#define DHTTYPE    DHT22     // DHT 22 (AM2302)
 //#define DHTTYPE    DHT21     // DHT 21 (AM2301)
 
 #define uS_TO_S_FACTOR 1000000
 #define TIME_TO_SLEEP 15 * 60
+#define JSON_CONFIG_FILE "/test_config.json"
 
-DHT_Unified dht(DHTPIN, DHTTYPE);
-// Adafruit_AHTX0 aht;
+// DHT_Unified dht(DHTPIN, DHTTYPE);
+Adafruit_AHTX0 aht;
 
 sensors_event_t humidity, temp;
 
+WiFiManager wifiManager;
 WiFiClientSecure client;
 HTTPClient https;
 
-const char* wifiSSID = WIFI_SSID;
-const char* wifiPWD = WIFI_PASS;
+char srvHost[50] = SRV_HOST;
+char apiKey[50] = "";
+char hgSensorTempID[50] = "";
+char hgSensorHumID[50] = "";
 
-String srvHost = SRV_HOST; 
-String apiEndpoint = SRV_API_ENDPOINT; 
-String apiKey = SRV_API_KEY;
-String hgSensorTempID = HG_SENSOR_TEMP_ID;
-String hgSensorHumID = HG_SENSOR_HUM_ID;
+WiFiManagerParameter custom_apiKey("apiKey", "API Key", "", 50);
+WiFiManagerParameter custom_srvHost("srvHost", "API hostname", srvHost, 50);
+WiFiManagerParameter custom_hgSensorTempID("hgSensorTempID", "Temperature sensor ID", "", 50);
+WiFiManagerParameter custom_hgSensorHumID("hgSensorHumID", "Humidity sensor ID", "", 50);
 
-// void readAHTSensorData() {
-//   aht.getEvent(&humidity, &temp);
-//   Serial.print("Temperature: "); 
-//   Serial.print(temp.temperature); 
-//   Serial.println(F("°C"));
-//   Serial.print("Humidity: "); 
-//   Serial.print(humidity.relative_humidity); 
-//   Serial.println(F("%"));
-// }
-
-void readDHTSensorData() {
-  dht.temperature().getEvent(&temp);
+void readAHTSensorData() {
+  aht.getEvent(&humidity, &temp);
 
   if (isnan(temp.temperature)) {
     Serial.println(F("Error reading temperature!"));
@@ -53,7 +51,6 @@ void readDHTSensorData() {
     Serial.println(F("°C"));
   }
 
-  dht.humidity().getEvent(&humidity);
   if (isnan(humidity.relative_humidity)) {
     Serial.println(F("Error reading humidity!"));
   }
@@ -64,25 +61,48 @@ void readDHTSensorData() {
   }
 }
 
+// void readDHTSensorData() {
+//   dht.temperature().getEvent(&temp);
+//   if (isnan(temp.temperature)) {
+//     Serial.println(F("Error reading temperature!"));
+//   }
+//   else {
+//     Serial.print(F("Temperature: "));
+//     Serial.print(temp.temperature);
+//     Serial.println(F("°C"));
+//   }
+//   dht.humidity().getEvent(&humidity);
+//   if (isnan(humidity.relative_humidity)) {
+//     Serial.println(F("Error reading humidity!"));
+//   }
+//   else {
+//     Serial.print(F("Humidity: "));
+//     Serial.print(humidity.relative_humidity);
+//     Serial.println(F("%"));
+//   }
+// }
+
 void connectWifi() {
-
   WiFi.mode(WIFI_STA);  // Set the ESP32 to station mode (client)
-  WiFi.begin(wifiSSID, wifiPWD);
+  bool connection = wifiManager.autoConnect();
 
-  while (WiFi.status() != WL_CONNECTED) {
-    Serial.println("Connecting to WiFi...");
-    delay(1000);
+  if (!connection) {
+    Serial.println("Failed to connect to Wifi");
+    esp_deep_sleep_start();
+  } else {  
+    Serial.println("Connected to WiFi");
   }
+}
 
-  Serial.println("Connected to WiFi");
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
+void disconnectWifi() {
+  wifiManager.disconnect();
+  WiFi.mode(WIFI_OFF);
 }
 
 void sendRequest(String sensorId, String value) {
-    https.begin(client, apiEndpoint.c_str());
+    https.begin(client, "https://" + String(srvHost) + "/api/sensors/readings");
     https.addHeader("Content-Type", "application/json");
-    https.addHeader("x-static-auth", apiKey.c_str());
+    https.addHeader("x-static-auth", apiKey);
 
     String jsonData = "{\"sensorId\":\"" + sensorId + "\",\"value\":\"" + value + "\"}";
 
@@ -95,8 +115,7 @@ void sendRequest(String sensorId, String value) {
       Serial.println(httpResponseCode);
       
       Serial.print("Server response: ");
-      Serial.println(response); 
-      
+      Serial.println(response);
     } else {
       Serial.println("Error in sending HTTP GET request!");
     }
@@ -106,8 +125,9 @@ void sendRequest(String sensorId, String value) {
 
 void syncData() {
   connectWifi();
+  client.setInsecure();
 
-  if (client.connect(srvHost.c_str(), 443)) {
+  if (client.connect(srvHost, 443)) {
     if (!isnan(temp.temperature)) {
       sendRequest(hgSensorTempID, String(temp.temperature));
     }
@@ -117,30 +137,120 @@ void syncData() {
   }
 
   client.stop();
-  WiFi.mode(WIFI_OFF);
+  disconnectWifi();
+}
+
+bool loadConfigFile() {
+  // Uncomment if we need to format filesystem
+  // SPIFFS.format();
+
+  Serial.println("Mounting File System...");
+ 
+  if (SPIFFS.begin(false) || SPIFFS.begin(true)) {
+    Serial.println("mounted file system");
+    if (SPIFFS.exists(JSON_CONFIG_FILE))
+    {
+      Serial.println("reading config file");
+      File configFile = SPIFFS.open(JSON_CONFIG_FILE, "r");
+      
+      if (configFile) {
+        Serial.println("Opened configuration file");
+        JsonDocument json;
+        DeserializationError error = deserializeJson(json, configFile);
+        serializeJsonPretty(json, Serial);
+
+        if (!error) {
+          Serial.println("Parsing JSON");
+ 
+          strcpy(apiKey, json["apiKey"]);
+          strcpy(srvHost, json["srvHost"]);
+          strcpy(hgSensorTempID, json["hgSensorTempID"]);
+          strcpy(hgSensorHumID, json["hgSensorHumID"]);
+ 
+          return true;
+        } else {
+          Serial.println("Failed to load json config");
+        }
+      }
+    }
+  } else {
+    Serial.println("Failed to mount FS");
+  }
+ 
+  return false;
+}
+
+void saveConfigFile() {
+  Serial.println(F("Saving configuration..."));
+  
+  JsonDocument json;
+  json["apiKey"] = apiKey;
+  json["srvHost"] = srvHost;
+  json["hgSensorTempID"] = hgSensorTempID;
+  json["hgSensorHumID"] = hgSensorHumID;
+ 
+  File configFile = SPIFFS.open(JSON_CONFIG_FILE, "w");
+  if (!configFile) {
+    Serial.println("failed to open config file for writing");
+  }
+ 
+  serializeJsonPretty(json, Serial);
+  if (serializeJson(json, configFile) == 0) {
+    Serial.println(F("Failed to write to file"));
+  }
+  configFile.close();
+}
+
+void saveConfigCallback () {
+  strcpy(apiKey, custom_apiKey.getValue());
+  strcpy(srvHost, custom_srvHost.getValue());
+  strcpy(hgSensorTempID, custom_hgSensorTempID.getValue());
+  strcpy(hgSensorHumID, custom_hgSensorHumID.getValue());
+  saveConfigFile();
+}
+
+bool factoryResetPushed() {
+  return (digitalRead(RESETPIN) == LOW);
 }
 
 void setup() {
   Serial.begin(115200);
   delay(1000); // wait for serial to open
+  pinMode(RESETPIN, INPUT_PULLUP);
+
+  if (factoryResetPushed()) {
+    Serial.println("Factory reset initiated");
+    SPIFFS.format();
+    wifiManager.resetSettings();
+  }
 
   esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
 
-  dht.begin();
+  // dht.begin();
+  if (!aht.begin()) {
+    Serial.println("Could not find AHT. Check wiring");
+  }
   sensor_t sensor;
   delay(sensor.min_delay + 1000); // wait for sensor
 
-  // if (! aht.begin()) {
-  //   Serial.println("Could not find AHT? Check wiring");
-  //   while (1) delay(10);
-  // }
+  wifiManager.setTitle("Sensor configuration portal");
+  wifiManager.setClass("invert");
+  wifiManager.setConfigPortalTimeout(180);
+  wifiManager.setConnectTimeout(30);
+  wifiManager.setSaveConfigCallback(saveConfigCallback);
+  wifiManager.addParameter(&custom_apiKey);
+  wifiManager.addParameter(&custom_srvHost);
+  wifiManager.addParameter(&custom_hgSensorTempID);
+  wifiManager.addParameter(&custom_hgSensorHumID);
 
-  client.setInsecure();
+  if (!loadConfigFile()) {
+    wifiManager.startConfigPortal();
+  }
 }
 
 void loop() {
-  readDHTSensorData();
+  readAHTSensorData();
+  // readDHTSensorData();
   syncData();
-
   esp_deep_sleep_start();
 }
