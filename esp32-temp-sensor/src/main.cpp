@@ -16,8 +16,7 @@
 //#define DHTTYPE    DHT22     // DHT 22 (AM2302)
 //#define DHTTYPE    DHT21     // DHT 21 (AM2301)
 
-#define uS_TO_S_FACTOR 1000000
-#define TIME_TO_SLEEP 15 * 60
+uint64_t TIME_TO_SLEEP = uint64_t(30 * 60) * uint64_t(1000000); // 60 * 60 - minutes * seconds
 #define JSON_CONFIG_FILE "/test_config.json"
 
 // DHT_Unified dht(DHTPIN, DHTTYPE);
@@ -33,6 +32,10 @@ char srvHost[50] = SRV_HOST;
 char apiKey[50] = "";
 char hgSensorTempID[50] = "";
 char hgSensorHumID[50] = "";
+char tempValue[5] = "0";
+char humValue[5] = "0";
+char tempPrevValue[5] = "0";
+char humPrevValue[5] = "0";
 
 WiFiManagerParameter custom_apiKey("apiKey", "API Key", "", 50);
 WiFiManagerParameter custom_srvHost("srvHost", "API hostname", srvHost, 50);
@@ -46,6 +49,7 @@ void readAHTSensorData() {
     Serial.println(F("Error reading temperature!"));
   }
   else {
+    strcpy(tempValue, String(temp.temperature, 1).c_str());
     Serial.print(F("Temperature: "));
     Serial.print(temp.temperature);
     Serial.println(F("°C"));
@@ -55,6 +59,7 @@ void readAHTSensorData() {
     Serial.println(F("Error reading humidity!"));
   }
   else {
+    strcpy(humValue, String(humidity.relative_humidity, 0).c_str());
     Serial.print(F("Humidity: "));
     Serial.print(humidity.relative_humidity);
     Serial.println(F("%"));
@@ -67,6 +72,7 @@ void readAHTSensorData() {
 //     Serial.println(F("Error reading temperature!"));
 //   }
 //   else {
+//     strcpy(tempValue, String(temp.temperature, 1).c_str());
 //     Serial.print(F("Temperature: "));
 //     Serial.print(temp.temperature);
 //     Serial.println(F("°C"));
@@ -76,6 +82,7 @@ void readAHTSensorData() {
 //     Serial.println(F("Error reading humidity!"));
 //   }
 //   else {
+//     strcpy(humValue, String(humidity.relative_humidity, 0).c_str());
 //     Serial.print(F("Humidity: "));
 //     Serial.print(humidity.relative_humidity);
 //     Serial.println(F("%"));
@@ -129,10 +136,10 @@ void syncData() {
 
   if (client.connect(srvHost, 443)) {
     if (!isnan(temp.temperature)) {
-      sendRequest(hgSensorTempID, String(temp.temperature));
+      sendRequest(hgSensorTempID, tempValue);
     }
     if (!isnan(humidity.relative_humidity)) {
-      sendRequest(hgSensorHumID, String(humidity.relative_humidity));
+      sendRequest(hgSensorHumID, humValue);
     }
   }
 
@@ -166,6 +173,8 @@ bool loadConfigFile() {
           strcpy(srvHost, json["srvHost"]);
           strcpy(hgSensorTempID, json["hgSensorTempID"]);
           strcpy(hgSensorHumID, json["hgSensorHumID"]);
+          strcpy(tempPrevValue, json["tempPrevValue"]);
+          strcpy(humPrevValue, json["humPrevValue"]);
  
           return true;
         } else {
@@ -188,6 +197,8 @@ void saveConfigFile() {
   json["srvHost"] = srvHost;
   json["hgSensorTempID"] = hgSensorTempID;
   json["hgSensorHumID"] = hgSensorHumID;
+  json["tempPrevValue"] = tempValue;
+  json["humPrevValue"] = humValue;
  
   File configFile = SPIFFS.open(JSON_CONFIG_FILE, "w");
   if (!configFile) {
@@ -224,7 +235,7 @@ void setup() {
     wifiManager.resetSettings();
   }
 
-  esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
+  esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP);
 
   // dht.begin();
   if (!aht.begin()) {
@@ -248,9 +259,20 @@ void setup() {
   }
 }
 
+bool sensorValuesUpdated() {
+  if (strcmp(tempValue, tempPrevValue) != 0 || strcmp(humValue, humPrevValue) != 0) {
+    return true;
+  } else {
+    return false;
+  }
+};
+
 void loop() {
   readAHTSensorData();
   // readDHTSensorData();
-  syncData();
+  if (sensorValuesUpdated()) {
+    syncData();
+    saveConfigFile();
+  }
   esp_deep_sleep_start();
 }

@@ -17,7 +17,7 @@ WiFiManager wifiManager;
 WiFiClientSecure client;
 HTTPClient https;
 
-uint64_t TIME_TO_SLEEP = uint64_t(60 * 60) * uint64_t(1000000); // 60 * 60 - minutes * seconds
+uint64_t TIME_TO_SLEEP = uint64_t(180 * 60) * uint64_t(1000000); // 180 * 60 - minutes * seconds
 char srvHost[50] = SRV_HOST;
 char apiKey[50] = "";
 char hgSensorID[50] = "";
